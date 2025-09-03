@@ -57,7 +57,7 @@ class Expression:
     def __init__(self, expr_string=""):
         self.expr_dict = self.parse_expr_string(expr_string)
         self.modes = self.find_modes(self.expr_dict)  # modes involved
-        self.cache = None  # memoization for normal_ordering()
+        self.cache = None  # memoization for normal_order()
         self.LOGGING = False
 
     def parse_expr_string(self, expr_string):
@@ -165,47 +165,52 @@ class Expression:
                     ">>>",
                 ) if self.LOGGING else None
 
-                # organize the term in Hilbert space order
-                hspace_organized_term = self.hspace_organize(
-                    term1 + "_" + term2
-                )
-                print(
-                    "hilbert_space_organized: ", hspace_organized_term
-                ) if self.LOGGING else None
+                # Step 1. Multiply two terms by simply concatenating the strings
+                # Here, the order of operators are all mixed up yet:
+                # e.g., "a_b+_a+_b" (operators are not grouped by mode, and are not in normal order)
+                unordered_operators = self.clean_string(term1 + "_" + term2)
+                original_coeff = coeff1 * coeff2
 
+                # if both terms were constant, the rest of code won't execute
+                # so manually add this constant term to the result
                 if term1 == "" and term2 == "":
-                    # if both terms are constant, the string manipulation doesn't execute
-                    # so manually multiply the coefficients and add to the result
-                    self.add_expr_dicts(result.expr_dict, {"": coeff1 * coeff2})
+                    self.add_expr_dicts(result.expr_dict, {"": original_coeff})
                     continue
 
+                # Step 2. Rearrange operators so that those of the same mode are grouped together
+                mode_grouped_term = self.group_by_mode(unordered_operators)
+                print(
+                    "Grouped by modes: ", mode_grouped_term
+                ) if self.LOGGING else None
+
+                # Step 3. For each mode, convert to normal order using the commutation relation
                 temp = {}
-                for single_mode_term in self.split_modes(hspace_organized_term):
+                # ex. single_mode_term = "a_a+_a+" (not in normal order yet)
+                for single_mode_term in self.split_by_mode(mode_grouped_term):
                     print(
                         "- single_mode_term: ", single_mode_term
                     ) if self.LOGGING else None
-                    mode = single_mode_term[0]  # the first character is the mode
-                    normal_ordered_single_mode_dict = self.normal_ordering(
+                    mode = single_mode_term[0]  # the first character is the mode letter
+                    normal_ordered_single_mode_dict = self.normal_order(
                         mode, single_mode_term, 1
                     )
                     print(
                         "-- normal_ordered_single_mode_dict: ",
                         normal_ordered_single_mode_dict,
                     ) if self.LOGGING else None
+
                     if not temp:
                         temp = normal_ordered_single_mode_dict
                     else:
-                        temp = self._multiply_normal_ordered_single_mode_dicts(
+                        temp = self._multiply_dicts(
                             temp, normal_ordered_single_mode_dict
                         )
 
-                overall_coeff = (
-                    coeff1 * coeff2
-                )  # multiply the initial coefficients
-                for key, value in temp.items():
-                    temp[key] = (
-                        value * overall_coeff
-                    )  # multiply the coefficient to each term
+                # temp now has the normal ordered terms for ALL modes
+                # and the coefficients that resulted from the commutation relations
+                # now multiply the original coefficient to each term
+                for multimode_term, commutation_coeff in temp.items():
+                    temp[multimode_term] = commutation_coeff * original_coeff
 
                 self.add_expr_dicts(
                     result.expr_dict, temp
@@ -222,9 +227,9 @@ class Expression:
     def __multiply__(self, other_expr):
         return self.multiply(other_expr)
 
-    def _multiply_normal_ordered_single_mode_dicts(self, dict1, dict2):
+    def _multiply_dicts(self, dict1, dict2):
         """
-        Multiply two dictionaries that are organized with commutators.
+        Multiply two expression dictionaries.
         This is a helper function for the multiply method.
 
         input:
@@ -243,35 +248,33 @@ class Expression:
                     result[new_key] = value1 * value2
         return result
 
-    def hspace_organize(self, term_string):
+    def group_by_mode(self, term_string):
         """
         Given a string representation of a SINGLE term consisting of multiple modes,
-        organize in the alphabetical order of operators.
-        ("Hilbert space organize")
+        collect the same modes together and rearrange them in alphabetical order.
 
         input: 
           term_string: key of expr_dict. (No coefficients, no (+).)
         
         example:
-          hspace_organize("a_b+_a+_b"): "a_a+_b+_b"
-          (But this result is not in normal order, so normal_ordering() takes care of it.)
+          group_by_mode("a_b+_a+_b"): "a_a+_b+_b"
+          (The result is not yet in normal order. normal_order() takes care of it.)
         """
-
-        organized_term = ""
+        mode_grouped_term = ""
 
         # go over each mode in term_string
         # (find_modes gives a list of mode letters in alphabetical order)
         for mode in self.find_modes({term_string: 1}):
             operators = term_string.split("_")
-            for operator in operators:  # operator could be either creation or annihilation
+            for operator in operators:  # an operator could be either creation or annihilation
                 if mode in operator:
                     # if this operator is in the mode that we're looking for,
-                    # copy it to the organized term string
-                    organized_term += operator + "_"
+                    # copy it to the mode grouped term string
+                    mode_grouped_term += operator + "_"
 
-        return organized_term[:-1]  # remove the trailing "_"
+        return mode_grouped_term[:-1]  # remove the trailing "_"
 
-    def normal_ordering(self, mode, single_mode_term, coeff):
+    def normal_order(self, mode, single_mode_term, coeff):
         """
         Given a string representation of a term consisting of a single mode,
         use the commutation relation to organize it in normal order
@@ -306,8 +309,8 @@ class Expression:
             # print("term_with_n: ", term_with_n, "  term_with_1: ", term_with_1)
 
             result = self.add_expr_dicts(
-                self.normal_ordering(mode, term_with_n, coeff),
-                self.normal_ordering(mode, term_with_1, coeff),
+                self.normal_order(mode, term_with_n, coeff),
+                self.normal_order(mode, term_with_1, coeff),
             )
             return result
 
@@ -343,13 +346,13 @@ class Expression:
                 dict1[key] = value
         return dict1
 
-    def split_modes(self, multi_mode_string):
+    def split_by_mode(self, multi_mode_string):
         """
         Split a string with multiple modes into a list of terms w.r.t. each mode.
 
         inputs:
         multi_mode_string: a string containing multiple modes (e.g., "a_a+_b_b+").
-             Should already be in alphabetical order (by running hspace_organize() beforehand)
+             Should already be in alphabetical order (by running group_by_mode() beforehand)
         returns:
           list of term strings for each Hilbert space.
         """
