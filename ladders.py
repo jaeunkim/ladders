@@ -76,6 +76,8 @@ class Expression:
             # separate the coefficient from the operators
             first_alphabet_idx = self.find_first_alphabet_index(term)  # index of the first operator
             operators = term[first_alphabet_idx:]
+            if first_alphabet_idx == -1:  # constant term
+                expr_dict[""] = complex(term)
             if first_alphabet_idx == 0:
                 expr_dict[operators] = 1
             else:
@@ -90,7 +92,7 @@ class Expression:
         term_string[:first_alphabet_idx]: coefficient
         term_string[first_alphabet_idx:]: operators
         """
-        first_alphabet_idx = 0
+        first_alphabet_idx = -1
         for idx, char in enumerate(term_string):
             if char.isalpha() and char != "j":
                 first_alphabet_idx = idx
