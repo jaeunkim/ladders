@@ -136,6 +136,9 @@ class Expression:
     def __add__(self, other_expr):
         return self.add(other_expr)
 
+    def __sub__(self, other_expr):
+        return self.add(scalar_multiply(other_expr, -1))
+
     def multiply(self, other_expr):
         """
         Multiply other_expr to the RIGHT of this expression
@@ -226,7 +229,7 @@ class Expression:
         ) if self.LOGGING else None
         return result
 
-    def __multiply__(self, other_expr):
+    def __mul__(self, other_expr):
         return self.multiply(other_expr)
 
     def _multiply_dicts(self, dict1, dict2):
