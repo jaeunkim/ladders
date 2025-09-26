@@ -394,26 +394,7 @@ class Expression:
           the count of the mode in the string
         """
         return multi_mode_string.count(mode)
-
-
-def add(expr1, expr2):
-    """
-    Return a new Expression instance that's the sum of expr1 and expr2
-    """
-    result = Expression("")
-
-    for term, coeff in expr1.expr_dict.items():
-        result.expr_dict[term] = coeff
-
-    for term, coeff in expr2.expr_dict.items():
-        if term in result.expr_dict.keys():
-            result.expr_dict[term] += coeff
-        else:
-            result.expr_dict[term] = coeff
-
-    result.modes = result.find_modes(result.expr_dict)
-
-    return result
+    
 
 def power(expr, exponent):
     """
@@ -534,3 +515,4 @@ def print_kerr(expr):
     print(
         "z-b cross-Kerr: ", expr.expr_dict["b+_b_z+_z+"]
     ) if "b+_b_z+_z+" in expr.expr_dict.keys() else print("z-b cross-Kerr: ", 0)
+
