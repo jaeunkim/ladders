@@ -516,3 +516,16 @@ def print_kerr(expr):
         "z-b cross-Kerr: ", expr.expr_dict["b+_b_z+_z+"]
     ) if "b+_b_z+_z+" in expr.expr_dict.keys() else print("z-b cross-Kerr: ", 0)
 
+
+def commutator(expr1, expr2):
+    """
+    Compute the commutator [expr1, expr2] = expr1*expr2 - expr2*expr1
+
+    inputs:
+      expr1: an Expression instance
+      expr2: an Expression instance
+
+    returns:
+      A new Expression instance with the result
+    """
+    return expr1*expr2 - expr2*expr1
