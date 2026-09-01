@@ -79,7 +79,7 @@ class Expression:
             operators = term[first_alphabet_idx:]
             if first_alphabet_idx == -1:  # constant term
                 expr_dict[""] = complex(term)
-            if first_alphabet_idx == 0:
+            elif first_alphabet_idx == 0:
                 expr_dict[operators] = 1
             else:
                 coeff_string = term[:first_alphabet_idx]
