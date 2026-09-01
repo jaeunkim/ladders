@@ -500,6 +500,34 @@ class Expression:
                 stacklevel=3,
             )
 
+def squeeze_generator(mode, zeta):
+    """
+    Build the exponent of the single-mode squeezing operator S(zeta),
+    in the convention of Crimin et al. 2021 (eq. 23):
+        S(zeta) = exp( -(zeta/2) a+_a+ + (conj(zeta)/2) a_a ),  zeta = r exp(i phi)
+
+    Pass the result to Expression.unitary_transform(), which then computes
+    S A S+, reproducing their eq. (24):
+        a -> cosh(r) a + exp(i phi) sinh(r) a+
+
+    Beware the sign convention: the creation term carries -zeta/2 and the
+    annihilation term +conj(zeta)/2. Flipping them squeezes the other quadrature.
+
+    inputs:
+      mode: (str) the single letter naming the mode, e.g. "a"
+      zeta: the squeezing parameter r * exp(1j * phi).
+            May be real, complex, or a sympy expression.
+
+    returns:
+      An Expression instance, to be used as the 'generator' argument
+      of Expression.unitary_transform()
+    """
+    # works for Python numbers, numpy scalars and sympy expressions alike
+    zeta_conj = zeta.conjugate() if hasattr(zeta, "conjugate") else np.conj(zeta)
+
+    return scalar_multiply(Expression(mode + "_" + mode), zeta_conj / 2) + \
+           scalar_multiply(Expression(mode + "+_" + mode + "+"), -zeta / 2)
+
 def largest_coefficient(expr):
     """
     Largest absolute coefficient in an Expression, as a float.
