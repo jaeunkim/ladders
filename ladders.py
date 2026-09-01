@@ -6,6 +6,7 @@ Description: Automates calculations involving multimode noncommutative Bosonic l
 """
 
 import copy
+import warnings
 import numpy as np
 
 
@@ -394,7 +395,127 @@ class Expression:
           the count of the mode in the string
         """
         return multi_mode_string.count(mode)
-    
+
+    def unitary_transform(self, generator, order=25, dagger=False,
+                          convergence_tol=1e-9):
+        """
+        Unitary transformation by U = e^S, where S is the given generator.
+        Computed with the Hadamard lemma (BCH expansion), truncated at 'order':
+            e^S A e^-S = A + [S, A] + [S, [S, A]]/2! + [S, [S, [S, A]]]/3! + ...
+
+        Pass the EXPONENT of the unitary as the generator!
+
+        Example: the squeezing operator of Crimin et al. 2021 (eq. 23),
+            S(zeta) = exp( -(zeta/2) a+_a+ + (conj(zeta)/2) a_a ),  zeta = r e^{i phi},
+        is built by squeeze_generator(mode, zeta), and
+            A.unitary_transform(squeeze_generator("a", zeta))
+        computes S A S+, e.g. a -> cosh(r) a + e^{i phi} sinh(r) a+ (their eq. 24).
+
+        Note: the series is a Taylor truncation, so for squeezing the cosh/sinh
+        coefficients are only accurate up to 'order' powers of r.
+        For a quadratic generator the cost is LINEAR in 'order' (such a
+        generator preserves operator degree, so the expression never grows),
+        which is why the default is generous: order=25 reaches machine
+        precision for squeezing parameters up to r ~ 5 in a few milliseconds.
+        A non-quadratic generator does grow the expression, so raise 'order'
+        with more care if the generator's order > 2.
+
+        inputs:
+          generator: an Expression instance, the exponent S of the unitary U = e^S
+          order: (int) truncation order of the BCH series
+          dagger: (bool) Notation! If False (default), computes U A U+ = e^S A e^-S
+                  if True, computes U+ A U = e^-S A e^S
+          convergence_tol: (float or None) warn if 
+                  (the last term of the series) / result > convergence_tol.
+                  Pass None to silence the check (e.g. when a low-order truncation 
+                  is deliberate, as in perturbation theory). Skipped automatically 
+                  when the coefficients are symbolic (cannot be compared numerically).
+
+        returns:
+          A new Expression instance with the result
+        """
+        S = scalar_multiply(generator, -1) if dagger else generator
+
+        # TODO add a deepcopy method to Expression, and use it here instead of add(Expression(""))
+        # it's not nice to rely on add() to make a fresh copy of self, because returning a new
+        # Expression instance is a side effect of adding, but it works for now
+
+        # a fresh copy of self, for the first term "A" in the series
+        result = self.add(Expression(""))
+
+        # will hold the n-fold nested commutator [S, [S, ... [S, A]]]
+        # start with a fresh copy of self, to get ready for the first commutator [S, A]
+        nested = self.add(Expression(""))  
+        factorial = 1
+        last_term = None  # most recent term added to the series
+
+        for n in range(1, order + 1):
+            nested = commutator(S, nested)
+            factorial *= n
+
+            # For performance, prune terms whose coefficients cancelled to zero in the commutator.
+            # Without this, dead terms are multiplied again on the next iteration
+            # and their operator strings grow, making normal_order() blow up.
+            nested.expr_dict = {
+                term: coeff for term, coeff in nested.expr_dict.items() if coeff != 0
+            }
+
+            # the series terminates once a nested commutator vanishes (e.g. [S, A] = 0)
+            # this is an EXACT result, so no convergence warning is warranted
+            if not nested.expr_dict:
+                last_term = None
+                break
+
+            last_term = scalar_multiply(nested, 1 / factorial)
+            result = result.add(last_term)
+
+        if convergence_tol is not None and last_term is not None:
+            self._warn_if_unconverged(last_term, result, order, convergence_tol)
+
+        return result
+
+    def _warn_if_unconverged(self, last_term, result, order, convergence_tol):
+        """
+        Warn if the BCH series of unitary_transform() was still contributing
+        significantly when it was cut off at 'order'.
+
+        Compares the size of the last term in series against the size of the whole
+        result. Silently does nothing if the coefficients are symbolic, since
+        they cannot then be compared numerically.
+        """
+        tail = largest_coefficient(last_term)
+        total = largest_coefficient(result)
+
+        if tail is None or total is None or total == 0:
+            return  # symbolic coefficients, or an identically zero result
+
+        ratio = tail / total
+        if ratio > convergence_tol:
+            warnings.warn(
+                f"unitary_transform(): the BCH series may not have converged by "
+                f"order={order}. The last term in the series is {ratio:.2e} of the result "
+                f"(tolerance {convergence_tol:.0e}), so the answer is likely "
+                f"inaccurate at about that relative level. Increase 'order', or "
+                f"pass convergence_tol=None if this truncation is deliberate.",
+                stacklevel=3,
+            )
+
+def largest_coefficient(expr):
+    """
+    Largest absolute coefficient in an Expression, as a float.
+    A rough measure of the size of an expression.
+
+    Returns None if any coefficient is symbolic (a sympy expression with free
+    symbols), because those cannot be compared numerically. Callers should
+    treat None as "no numeric comparison possible" rather than as zero.
+    """
+    magnitude = 0.0
+    for coeff in expr.expr_dict.values():
+        try:
+            magnitude = max(magnitude, abs(complex(coeff)))
+        except (TypeError, ValueError):
+            return None  # symbolic coefficient
+    return magnitude
 
 def power(expr, exponent):
     """
