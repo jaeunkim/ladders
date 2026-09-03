@@ -5,7 +5,6 @@ Date: 2025-07-30
 Description: Automates calculations involving multimode noncommutative Bosonic ladder operators.
 """
 
-import copy
 import warnings
 import numpy as np
 
@@ -60,6 +59,62 @@ class Expression:
         self.modes = self.find_modes(self.expr_dict)  # modes involved
         self.cache = None  # memoization for normal_order()
         self.LOGGING = False
+
+    @classmethod
+    def from_dict(cls, expr_dict, modes=None):
+        """
+        Alternative constructor: build an Expression straight from a
+        {term string: coefficient} dictionary, bypassing string parsing.
+
+        inputs:
+          expr_dict: a {term string: coefficient} dictionary. It is copied, so
+                  the caller keeps ownership of the dictionary they passed in.
+          modes: (list or None) the modes involved. Recomputed from 'expr_dict'
+                  unless given. Pass it only when the modes are already known to
+                  be correct (e.g. scalar multiplication, which introduces no
+                  new mode), to skip the scan over every term.
+
+        returns:
+          A new instance of 'cls', so subclasses stay their own type
+        """
+        new = cls("")
+        new.expr_dict = dict(expr_dict)
+        new.modes = list(modes) if modes is not None else new.find_modes(new.expr_dict)
+        return new
+
+    def copy(self):
+        """
+        A new Expression holding the same terms.
+
+        Only the containers ('expr_dict' and 'modes') are duplicated; the
+        coefficients themselves are shared. That is safe because every
+        coefficient type in use is immutable (complex numbers and sympy
+        expressions), and it keeps the copy cheap even for a large symbolic
+        expression, where copy.deepcopy() would rebuild every sympy tree.
+
+        'LOGGING' is carried over, being user configuration rather than
+        expression data. 'cache' is shared on purpose: normal_order() is a pure
+        function of the term string, so an entry computed for one Expression is
+        valid for any other. Keep it that way -- if anything expression-specific
+        is ever stored in 'cache', sharing it here becomes a bug.
+
+        returns:
+          A new Expression instance, of the same class as self
+        """
+        new = type(self).from_dict(self.expr_dict, self.modes)
+        new.LOGGING = self.LOGGING
+        new.cache = self.cache
+        return new
+
+    def __copy__(self):
+        return self.copy()
+
+    def __deepcopy__(self, memo):
+        # A deep copy is indistinguishable from a shallow one here: the
+        # coefficients are immutable, so sharing them cannot be observed.
+        new = self.copy()
+        memo[id(self)] = new  # repeated references to self map to a single copy
+        return new
 
     def parse_expr_string(self, expr_string):
         """
@@ -436,16 +491,12 @@ class Expression:
         """
         S = scalar_multiply(generator, -1) if dagger else generator
 
-        # TODO add a deepcopy method to Expression, and use it here instead of add(Expression(""))
-        # it's not nice to rely on add() to make a fresh copy of self, because returning a new
-        # Expression instance is a side effect of adding, but it works for now
-
         # a fresh copy of self, for the first term "A" in the series
-        result = self.add(Expression(""))
+        result = self.copy()
 
         # will hold the n-fold nested commutator [S, [S, ... [S, A]]]
         # start with a fresh copy of self, to get ready for the first commutator [S, A]
-        nested = self.add(Expression(""))  
+        nested = self.copy()
         factorial = 1
         last_term = None  # most recent term added to the series
 
@@ -555,7 +606,7 @@ def power(expr, exponent):
     
     returns a new Expression instance
     """
-    result = copy.deepcopy(expr)
+    result = expr.copy()
     for _ in range(exponent - 1):
         result = result.multiply(expr)
 
@@ -568,14 +619,11 @@ def scalar_multiply(expr, scalar):
     """
     Returns a fresh Expression instance after scalar multiplication.
     """
-    result = Expression("")
-    for term, coeff in expr.expr_dict.items():
-        result.expr_dict[term] = coeff * scalar
-        # print("term: ", term, "coeff: ", coeff, result.expr_dict[term])
-
-    # no need to find_modes() because no new mode is introduced
-
-    return result
+    # modes are passed straight through: scalar multiplication introduces no new mode
+    return type(expr).from_dict(
+        {term: coeff * scalar for term, coeff in expr.expr_dict.items()},
+        modes=expr.modes,
+    )
 
 
 def print_nonzero_terms(expr):
