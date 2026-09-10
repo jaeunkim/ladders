@@ -15,8 +15,14 @@ House 2008, eq. 22.  Two parallel grounded planes -> alternating image series.
 import numpy as np
 
 um = 1e-6
-GAP = 5 * um           # inter-electrode gap on the chip (fabrication constraint, fixed)
+GAP = 5 * um           # fallback inter-electrode gap, used only when a geometry dict has no "gap" key
 # 20260910 Jaeun: GAP tp 5um, as discussed in the lab meeting. (TODO: try 3, 5, 10, 20 um and see how the coefficients change)
+# The gap is now a per-geometry parameter (g["gap"]): DEFAULT_GEOM (the GDS design) uses 20 um,
+# the optimisation loop uses CONSTRAINTS["GAP"] = 5 um.
+
+MIN_FEATURE = 10 * um  # smallest fabricable electrode dimension (comp width/height, radial width,
+                       # axial height, axial width).  Adjust with fp.MIN_FEATURE = ... , or pass
+                       # min_feature=... to geometry_ok().
 
 
 # ----------------------------------------------------------------------------
@@ -55,19 +61,38 @@ DEFAULT_GEOM = dict(
     comp_h=260 * um,       # compHeight  : z-extent
     radial_w=2550 * um,    # radialWidth : x-extent of the radial electrodes
     axial_h=4570 * um,     # axialHeight : z-extent of the axial electrodes
+    axial_w=300 * um,      # axialWidth  : x-extent of the axial electrodes (free parameter; 300 um
+                           #               = 2*comp_cx - comp_w - 2*gap, the GDS value at gap = 20 um)
+    gap=20 * um,           # inter-electrode gap of the GDS design
     sep=1000 * um,         # flipSeparation d = 2h
 )
+
+GEOM_KEYS = ("comp_cx", "comp_cz", "comp_w", "comp_h", "radial_w", "axial_h", "axial_w", "gap", "sep")
+
+
+def gap_of(g):
+    """Inter-electrode gap of a geometry (falls back to the module default GAP)."""
+    return g.get("gap", GAP)
+
+
+def axial_width(g):
+    """x-extent of the axial electrodes.  Free parameter g["axial_w"]; geometry dicts written
+    before it existed fall back to the old rule (axial electrode exactly spanning the space
+    between the two mirrored compensation/radial columns)."""
+    aw = g.get("axial_w")
+    return 2 * g["comp_cx"] - g["comp_w"] - 2 * gap_of(g) if aw is None else aw
 
 
 def electrode_rects(g):
     """Return dict group -> list of rectangles (xlow, xup, zlow, zup).
     Mirror copies as in the Mathematica file (ReflectionTransform)."""
     cx, cz, w, hh = g["comp_cx"], g["comp_cz"], g["comp_w"], g["comp_h"]
-    axial_w = 2 * cx - w - 2 * GAP
+    gap = gap_of(g)
+    aw = axial_width(g)
 
     comp_ur = (cx - w / 2, cx + w / 2, cz - hh / 2, cz + hh / 2)
-    rad_ur = (cx + w / 2 + GAP, cx + w / 2 + GAP + g["radial_w"], cz - hh / 2, cz + hh / 2)
-    ax_u = (-axial_w / 2, axial_w / 2, cz + hh / 2 + GAP, cz + hh / 2 + GAP + g["axial_h"])
+    rad_ur = (cx + w / 2 + gap, cx + w / 2 + gap + g["radial_w"], cz - hh / 2, cz + hh / 2)
+    ax_u = (-aw / 2, aw / 2, cz + hh / 2 + gap, cz + hh / 2 + gap + g["axial_h"])
 
     def mirror_x(r):
         return (-r[1], -r[0], r[2], r[3])
@@ -79,11 +104,16 @@ def electrode_rects(g):
     return {"comp": four(comp_ur), "radial": four(rad_ur), "axial": [ax_u, mirror_z(ax_u)]}
 
 
-def geometry_ok(g):
-    """Fabrication / topology sanity: no overlaps, positive widths, sep >= 20 um."""
+def geometry_ok(g, min_feature=None):
+    """Fabrication / topology sanity: every electrode dimension >= the minimum feature size
+    (MIN_FEATURE, or the min_feature argument), no overlaps, sep >= 20 um."""
+    mf = MIN_FEATURE if min_feature is None else min_feature
     cx, cz, w, hh = g["comp_cx"], g["comp_cz"], g["comp_w"], g["comp_h"]
-    return ((cx - w / 2) > GAP and (cz - hh / 2) >= GAP / 2 and w > 0 and hh > 0
-            and g["radial_w"] > 0 and g["axial_h"] > 0 and g["sep"] >= 20 * um)
+    gap = gap_of(g)
+    return (gap > 0
+            and min(w, hh, g["radial_w"], g["axial_h"], axial_width(g)) >= mf
+            and (cx - w / 2) > gap and (cz - hh / 2) >= gap / 2
+            and g["sep"] >= 20 * um)
 
 
 def group_potential(group, g, x, y, z, nmax=30):
