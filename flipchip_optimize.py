@@ -23,6 +23,13 @@ Constraints (all adjustable through CONSTRAINTS):
                                       magnetron frequency from voltage noise SIGMA_V (relative)
                                       + V_FLOOR (absolute) on each channel and SIGMA_B on B.
                                       This is what really forbids eps -> 1 and omega_1 -> 0.
+    Theta <= ORTHO_MAX                orthogonality of the anharmonicity knob: fractional pull of
+                                      w~_- per fractional change of the quartic coefficients when
+                                      one electrode voltage is tuned (see orthogonality()).  The
+                                      flip-chip version of the 'orthogonalised trap'.  Off by
+                                      default (ORTHO_MAX = inf); Theta is always computed and
+                                      reported.  ORTHO_GROUP picks the knob ("comp", "radial",
+                                      "axial", or None = the best single electrode).
     |V| <= V_MAX,  B_MIN <= B <= B_MAX,  fabrication bounds from geometry_ok():
                                       every electrode dimension >= fp.MIN_FEATURE (10 um by
                                       default) and an inter-electrode gap of CONSTRAINTS["GAP"]
@@ -42,7 +49,12 @@ CONSTRAINTS = dict(R_MAX=0.10, S_MAX=0.5, WM_MIN=2 * np.pi * 1e6,
                    N_LEVELS=4, PURITY_MIN=0.9, FOCK_DIM=16,
                    NOISE_RATIO=10.0, SIGMA_V=1e-6, V_FLOOR=1e-6, SIGMA_B=1e-8,
                    V_MAX=14.0, B_MIN=0.05, B_MAX=0.3,
-                   GAP=5 * um)          # inter-electrode gap stamped into every optimised geometry
+                   GAP=5 * um,          # inter-electrode gap stamped into every optimised geometry
+                   ORTHO_MAX=np.inf,    # max Theta of the anharmonicity knob; inf = penalty off.
+                                        # Theta ~ 1e-4 for the GDS comp electrode, >> 1 when the
+                                        # knob is not orthogonal; try 1.0 to make it bind
+                   ORTHO_GROUP=None,    # which electrode must be the orthogonal knob (None = any)
+                   ORTHO_W=50.0)        # penalty weight, as for the other hinges
 
 SHAPE_NAMES = ["cx/h", "cz/h", "w/h", "hh/h", "rw/h", "ah/h", "aw/h"]
 SHAPE_LO = np.array([0.15, 0.15, 0.05, 0.05, 0.3, 0.3, 0.05])
@@ -107,6 +119,60 @@ class TaylorCache:
         if key not in self.store:
             self.store[key] = taylor_all_groups(g, **self.fit_kw)[0]
         return self.store[key]
+
+
+QUARTICS = ((4, 0, 0), (0, 4, 0), (0, 0, 4), (2, 2, 0), (2, 0, 2), (0, 2, 2))
+
+
+def _c4_norm(C):
+    return float(np.linalg.norm([C[m] for m in QUARTICS]))
+
+
+def orthogonality(Cg, volts, B, dv=1e-3):
+    """Orthogonality of each electrode group as an anharmonicity knob:
+
+        Theta_g = |d w~_- / w~_-|  /  (|dC4| / |C4|)      for a small step dv on V_g
+
+    the fractional pull of the magnetron (qubit) frequency per fractional change of the
+    quartic coefficient vector.  This is the flip-chip version of the precision-measurement
+    "orthogonalised trap" (dC2/dV_comp = 0, so the compensation electrode tunes the
+    anharmonicity at fixed frequency): Theta << 1 is an orthogonal knob, Theta >> 1 means the
+    electrode moves the spectrum more than it moves the anharmonicity.
+
+    Cheap enough for the optimiser inner loop: the frequency response needs only quad_params
+    (no ladders) and the quartic response is exact linear algebra, since C is linear in the
+    voltages.  |dC4| is the length of the *change* vector rather than the change of the
+    length, so it cannot vanish spuriously when the total quartic happens to be stationary.
+    Theta is independent of dv to leading order; dv only sets the linearisation scale.
+
+    Note this is deliberately stricter than |dln w~_-/dln|alpha_-||: alpha_- also changes
+    because a curvature change reshapes the modes, and crediting that would credit exactly
+    the non-orthogonal part of the tuning.  Theta counts only the anharmonicity that comes
+    from the anharmonic coefficients themselves.
+
+    The three-electrode harmonic-null combination is always exactly orthogonal (Laplace makes
+    dC2/dV rank 2); Theta asks the harder question of whether a *single* electrode is.
+    """
+    C0 = combine(Cg, volts)
+    c4_tot = _c4_norm(C0)
+    P0 = quad_params(C0, B)
+    out = {}
+    for grp in GROUPS:
+        d_c4 = _c4_norm(Cg[grp]) * dv / c4_tot if c4_tot > 0 else 0.0
+        v2 = dict(volts); v2[grp] += dv
+        try:
+            d_w = abs(quad_params(combine(Cg, v2), B)["wt_m"] - P0["wt_m"]) / P0["wt_m"]
+        except ValueError:
+            out[grp] = np.inf; continue
+        out[grp] = d_w / d_c4 if d_c4 > 0 else np.inf
+    return out
+
+
+def ortho_figure(ortho, cons=CONSTRAINTS):
+    """The single number the penalty acts on: Theta of the designated knob, or of the best
+    single electrode if ORTHO_GROUP is None."""
+    grp = cons.get("ORTHO_GROUP")
+    return ortho[grp] if grp else min(ortho.values())
 
 
 def magnetron_freq_jitter(Cg, volts, B, cons):
@@ -180,22 +246,29 @@ def evaluate(p, sep, cache, cons=CONSTRAINTS, degrees=(4, 6), order=30):
             break
         n_bound += 1
     jitter, contrib = magnetron_freq_jitter(Cg, volts, B, cons)
+    ortho = orthogonality(Cg, volts, B)
     out.update(ok=True, B=B, C=C, Cg=Cg, P=P, G=G, V=V, kerr=kt, alpha1=alpha1, alpha2=alpha2, alpha=alpha,
                alpha_np=alpha_np, E=E, purity=pur, n_bound=n_bound,
                ratio=abs(alpha) / P["wt_m"], mode_sep=P["wt_m"] / P["wt_p"],
                jitter=jitter, jitter_contrib=contrib,
-               noise_ratio=abs(alpha) / jitter if jitter > 0 else np.inf)
+               noise_ratio=abs(alpha) / jitter if jitter > 0 else np.inf,
+               ortho=ortho, ortho_figure=ortho_figure(ortho, cons))
     return out
 
 
 def score(p, sep, cache, cons=CONSTRAINTS, **kw):
-    """log10|alpha_-/2pi| minus quadratic hinge penalties; -50 if infeasible."""
+    """log10|alpha_-/2pi| minus quadratic hinge penalties; -50 if infeasible.
+    The orthogonality hinge is quadratic in log10(Theta/ORTHO_MAX) because Theta spans
+    decades; it is inactive while ORTHO_MAX is inf (the default)."""
     r = evaluate(p, sep, cache, cons, **kw)
     if not r["ok"] or r["alpha"] == 0:
         return -50.0
     s = np.log10(abs(r["alpha"]) / (2 * np.pi))
     s -= 50 * max(0.0, r["ratio"] / cons["R_MAX"] - 1) ** 2
     s -= 50 * max(0.0, cons["NOISE_RATIO"] / r["noise_ratio"] - 1) ** 2
+    if np.isfinite(cons["ORTHO_MAX"]):                             # orthogonality of the knob
+        th = r["ortho_figure"]                                     # hinge on log10: Theta spans decades
+        s -= 20.0 if not np.isfinite(th) else cons["ORTHO_W"] * max(0.0, np.log10(th / cons["ORTHO_MAX"])) ** 2
     if r["n_bound"] < cons["N_LEVELS"]:
         s -= 2.0 * (cons["N_LEVELS"] - r["n_bound"])
     return s
@@ -286,5 +359,10 @@ def report(r):
           f"  purity {np.round(r['purity'], 3)}  -> {r['n_bound']} clean levels")
     print(f"  w~- jitter/2pi = {r['jitter']/2/np.pi/1e3:.2f} kHz  (comp {jc['comp']/2/np.pi/1e3:.2f}, rad {jc['radial']/2/np.pi/1e3:.2f}, "
           f"ax {jc['axial']/2/np.pi/1e3:.2f}, B {jc['B']/2/np.pi/1e3:.2f} kHz)   |alpha|/jitter = {r['noise_ratio']:.1f}")
+    th = r["ortho"]
+    print(f"  orthogonality Theta (freq pull per unit quartic change): comp {th['comp']:.3g}, radial {th['radial']:.3g}, "
+          f"axial {th['axial']:.3g}  ->  knob figure {r['ortho_figure']:.3g} vs ORTHO_MAX = {CONSTRAINTS['ORTHO_MAX']}")
+    print(f"    (Theta << 1 = single-electrode orthogonal knob; the 3-electrode harmonic-null combination"
+          f" is orthogonal by construction whatever Theta is)")
     print(f"  cross-Kerr/2pi: mag-ax {k['K_mz']/2/np.pi/1e6:+.4f} MHz, mag-cyc {k['K_pm']/2/np.pi/1e6:+.4f} MHz;"
           f"  axial self-Kerr 2K_zz/2pi = {2*k['K_zz']/2/np.pi/1e6:+.4f} MHz")
